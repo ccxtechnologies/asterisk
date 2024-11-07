@@ -41,6 +41,8 @@
 #include "asterisk/musiconhold.h"
 #include "asterisk/app.h"
 
+#include <signal.h>
+
 AST_LIST_HEAD(app_control_rules, stasis_app_control_rule);
 
 /*!
@@ -293,6 +295,13 @@ static struct stasis_app_command *exec_command_on_condition(
 
 	ao2_link_flags(control->command_queue, command, OBJ_NOLOCK);
 	ast_cond_signal(&control->wait_cond);
+
+	if (control->channel) {
+		/* Queue a null frame so that if and when the channel is waited on,
+		   return immediately to process the new command */
+		ast_queue_frame(control->channel, &ast_null_frame);
+	}
+
 	ao2_unlock(control->command_queue);
 
 	return command;

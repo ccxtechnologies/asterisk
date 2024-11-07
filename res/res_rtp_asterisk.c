@@ -47,7 +47,6 @@
 #include <math.h>
 
 #ifdef HAVE_OPENSSL
-#define OPENSSL_SUPPRESS_DEPRECATED 1
 #include <openssl/opensslconf.h>
 #include <openssl/opensslv.h>
 #if !defined(OPENSSL_NO_SRTP) && (OPENSSL_VERSION_NUMBER >= 0x10001000L)
@@ -139,7 +138,6 @@
 #define RTCP_PT_PSFB    AST_RTP_RTCP_PSFB
 
 #define RTP_MTU		1200
-#define DTMF_SAMPLE_RATE_MS    8 /*!< DTMF samples per millisecond */
 
 #define DEFAULT_DTMF_TIMEOUT (150 * (8000 / 1000))	/*!< samples */
 
@@ -435,6 +433,7 @@ struct ast_rtp {
 	unsigned int dtmf_timeout;        /*!< When this timestamp is reached we consider END frame lost and forcibly abort digit */
 	unsigned int dtmfsamples;
 	enum ast_rtp_dtmf_mode dtmfmode;  /*!< The current DTMF mode of the RTP stream */
+	unsigned int dtmf_samplerate_ms;  /*!< The sample rate of the current RTP stream in ms (sample rate / 1000) */
 	/* DTMF Transmission Variables */
 	unsigned int lastdigitts;
 	char sending_digit;	/*!< boolean - are we sending digits */
@@ -1552,7 +1551,7 @@ static void rtp_ioqueue_thread_remove(struct ast_rtp_ioqueue_thread *ioqueue)
 
 	/* If nothing is using this ioqueue thread destroy it */
 	AST_LIST_LOCK(&ioqueues);
-	if ((ioqueue->count - 2) == 0) {
+	if ((ioqueue->count -= 2) == 0) {
 		destroy = 1;
 		AST_LIST_REMOVE(&ioqueues, ioqueue, next);
 	}
@@ -1902,7 +1901,7 @@ static int dtls_setup_rtcp(struct ast_rtp_instance *instance)
 
 static const SSL_METHOD *get_dtls_method(void)
 {
-#if OPENSSL_VERSION_NUMBER < 0x10002000L || defined(LIBRESSL_VERSION_NUMBER)
+#if OPENSSL_VERSION_NUMBER < 0x10002000L
 	return DTLSv1_method();
 #else
 	return DTLS_method();
@@ -1914,6 +1913,32 @@ struct dtls_cert_info {
 	X509 *certificate;
 };
 
+static int apply_dh_params(SSL_CTX *ctx, BIO *bio)
+{
+	int res = 0;
+
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	EVP_PKEY *dhpkey = PEM_read_bio_Parameters(bio, NULL);
+	if (dhpkey && EVP_PKEY_is_a(dhpkey, "DH")) {
+		res = SSL_CTX_set0_tmp_dh_pkey(ctx, dhpkey);
+	}
+	if (!res) {
+		/* A successful call to SSL_CTX_set0_tmp_dh_pkey() means
+		   that we lost ownership of dhpkey and should not free
+		   it ourselves */
+		EVP_PKEY_free(dhpkey);
+	}
+#else
+	DH *dh = PEM_read_bio_DHparams(bio, NULL, NULL, NULL);
+	if (dh) {
+		res = SSL_CTX_set_tmp_dh(ctx, dh);
+	}
+	DH_free(dh);
+#endif
+
+	return res;
+}
+
 static void configure_dhparams(const struct ast_rtp *rtp, const struct ast_rtp_dtls_cfg *dtls_cfg)
 {
 #if !defined(OPENSSL_NO_ECDH) && (OPENSSL_VERSION_NUMBER >= 0x10000000L) && (OPENSSL_VERSION_NUMBER < 0x10100000L)
@@ -1924,15 +1949,11 @@ static void configure_dhparams(const struct ast_rtp *rtp, const struct ast_rtp_d
 	if (!ast_strlen_zero(dtls_cfg->pvtfile)) {
 		BIO *bio = BIO_new_file(dtls_cfg->pvtfile, "r");
 		if (bio) {
-			DH *dh = PEM_read_bio_DHparams(bio, NULL, NULL, NULL);
-			if (dh) {
-				if (SSL_CTX_set_tmp_dh(rtp->ssl_ctx, dh)) {
-					long options = SSL_OP_CIPHER_SERVER_PREFERENCE |
-						SSL_OP_SINGLE_DH_USE | SSL_OP_SINGLE_ECDH_USE;
-					options = SSL_CTX_set_options(rtp->ssl_ctx, options);
-					ast_verb(2, "DTLS DH initialized, PFS enabled\n");
-				}
-				DH_free(dh);
+			if (apply_dh_params(rtp->ssl_ctx, bio)) {
+				long options = SSL_OP_CIPHER_SERVER_PREFERENCE |
+					SSL_OP_SINGLE_DH_USE | SSL_OP_SINGLE_ECDH_USE;
+				options = SSL_CTX_set_options(rtp->ssl_ctx, options);
+				ast_verb(2, "DTLS DH initialized, PFS enabled\n");
 			}
 			BIO_free(bio);
 		}
@@ -1963,6 +1984,10 @@ static void configure_dhparams(const struct ast_rtp *rtp, const struct ast_rtp_d
 
 static int create_ephemeral_ec_keypair(EVP_PKEY **keypair)
 {
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+	*keypair = EVP_EC_gen(SN_X9_62_prime256v1);
+	return *keypair ? 0 : -1;
+#else
 	EC_KEY *eckey = NULL;
 	EC_GROUP *group = NULL;
 
@@ -2002,6 +2027,7 @@ error:
 	EC_GROUP_free(group);
 
 	return -1;
+#endif
 }
 
 /* From OpenSSL's x509 command */
@@ -2029,8 +2055,11 @@ static int create_ephemeral_certificate(EVP_PKEY *keypair, X509 **certificate)
 	if (!(serial = BN_new())
 	   || !BN_rand(serial, SERIAL_RAND_BITS, -1, 0)
 	   || !BN_to_ASN1_INTEGER(serial, X509_get_serialNumber(cert))) {
+		BN_free(serial);
 		goto error;
 	}
+
+	BN_free(serial);
 
 	/*
 	 * Validity period - Current Chrome & Firefox make it 31 days starting
@@ -2066,7 +2095,6 @@ static int create_ephemeral_certificate(EVP_PKEY *keypair, X509 **certificate)
 	return 0;
 
 error:
-	BN_free(serial);
 	X509_free(cert);
 
 	return -1;
@@ -3180,6 +3208,59 @@ static int __rtp_recvfrom(struct ast_rtp_instance *instance, void *buf, size_t s
 		ast_debug_dtls(3, "(%p) DTLS - __rtp_recvfrom rtp=%p - Got SSL packet '%d'\n", instance, rtp, *in);
 
 		/*
+		 * If ICE is in use, we can prevent a possible DOS attack
+		 * by allowing DTLS protocol messages (client hello, etc)
+		 * only from sources that are in the active remote
+		 * candidates list.
+		 */
+
+#ifdef HAVE_PJPROJECT
+		if (rtp->ice) {
+			int pass_src_check = 0;
+			int ix = 0;
+
+			/*
+			 * You'd think that this check would cause a "deadlock"
+			 * because ast_rtp_ice_start_media calls dtls_perform_handshake
+			 * before it sets ice_media_started = 1 so how can we do a
+			 * handshake if we're dropping packets before we send them
+			 * to openssl.  Fortunately, dtls_perform_handshake just sets
+			 * up openssl to do the handshake and doesn't actually perform it
+			 * itself and the locking prevents __rtp_recvfrom from
+			 * running before the ice_media_started flag is set.  So only
+			 * unexpected DTLS packets can get dropped here.
+			 */
+			if (!rtp->ice_media_started) {
+				ast_log(LOG_WARNING, "%s: DTLS packet from %s dropped. ICE not completed yet.\n",
+					ast_rtp_instance_get_channel_id(instance),
+					ast_sockaddr_stringify(sa));
+				return 0;
+			}
+
+			/*
+			 * If we got this far, then there have to be candidates.
+			 * We have to use pjproject's rcands because they may have
+			 * peer reflexive candidates that our ice_active_remote_candidates
+			 * won't.
+			 */
+			for (ix = 0; ix < rtp->ice->real_ice->rcand_cnt; ix++) {
+				pj_ice_sess_cand *rcand = &rtp->ice->real_ice->rcand[ix];
+				if (ast_sockaddr_pj_sockaddr_cmp(sa, &rcand->addr) == 0) {
+					pass_src_check = 1;
+					break;
+				}
+			}
+
+			if (!pass_src_check) {
+				ast_log(LOG_WARNING, "%s: DTLS packet from %s dropped. Source not in ICE active candidate list.\n",
+					ast_rtp_instance_get_channel_id(instance),
+					ast_sockaddr_stringify(sa));
+				return 0;
+			}
+		}
+#endif
+
+		/*
 		 * A race condition is prevented between dtls_perform_handshake()
 		 * and this function because both functions have to get the
 		 * instance lock before they can do anything.  The
@@ -4202,9 +4283,10 @@ static int ast_rtp_dtmf_begin(struct ast_rtp_instance *instance, char digit)
 {
 	struct ast_rtp *rtp = ast_rtp_instance_get_data(instance);
 	struct ast_sockaddr remote_address = { {0,} };
-	int hdrlen = 12, res = 0, i = 0, payload = 101;
+	int hdrlen = 12, res = 0, i = 0, payload = -1, sample_rate = -1;
 	char data[256];
 	unsigned int *rtpheader = (unsigned int*)data;
+	RAII_VAR(struct ast_format *, payload_format, NULL, ao2_cleanup);
 
 	ast_rtp_instance_get_remote_address(instance, &remote_address);
 
@@ -4229,12 +4311,48 @@ static int ast_rtp_dtmf_begin(struct ast_rtp_instance *instance, char digit)
 		return -1;
 	}
 
-	/* Grab the payload that they expect the RFC2833 packet to be received in */
-	payload = ast_rtp_codecs_payload_code_tx(ast_rtp_instance_get_codecs(instance), 0, NULL, AST_RTP_DTMF);
+	if (rtp->lasttxformat == ast_format_none) {
+		/* No audio frames have been written yet so we have to lookup both the preferred payload type and bitrate. */
+		payload_format = ast_rtp_codecs_get_preferred_format(ast_rtp_instance_get_codecs(instance));
+		if (payload_format) {
+			/* If we have a preferred type, use that. Otherwise default to 8K. */
+			sample_rate = ast_format_get_sample_rate(payload_format);
+		}
+	} else {
+		sample_rate = ast_format_get_sample_rate(rtp->lasttxformat);
+	}
+
+	if (sample_rate != -1) {
+		payload = ast_rtp_codecs_payload_code_tx_sample_rate(ast_rtp_instance_get_codecs(instance), 0, NULL, AST_RTP_DTMF, sample_rate);
+	}
+
+	if (payload == -1 ||
+		!ast_rtp_payload_mapping_tx_is_present(
+			ast_rtp_instance_get_codecs(instance), ast_rtp_codecs_get_payload(ast_rtp_instance_get_codecs(instance), payload))) {
+		/* Fall back to the preferred DTMF payload type and sample rate as either we couldn't find an audio codec to try and match
+		   sample rates with or we could, but a telephone-event matching that audio codec's sample rate was not included in the
+		   sdp negotiated by the far end. */
+		payload = ast_rtp_codecs_get_preferred_dtmf_format_pt(ast_rtp_instance_get_codecs(instance));
+		sample_rate = ast_rtp_codecs_get_preferred_dtmf_format_rate(ast_rtp_instance_get_codecs(instance));
+	}
+
+	/* The sdp negotiation has not yeilded a usable RFC 2833/4733 format. Try a default-rate one as a last resort. */
+	if (payload == -1 || sample_rate == -1) {
+		sample_rate = DEFAULT_DTMF_SAMPLE_RATE_MS;
+		payload = ast_rtp_codecs_payload_code_tx(ast_rtp_instance_get_codecs(instance), 0, NULL, AST_RTP_DTMF);
+	}
+	/* Even trying a default payload has failed. We are trying to send a digit outside of what was negotiated for. */
+	if (payload == -1) {
+		return -1;
+	}
+
+	ast_test_suite_event_notify("DTMF_BEGIN", "Digit: %d\r\nPayload: %d\r\nRate: %d\r\n", digit, payload, sample_rate);
+	ast_debug(1, "Sending digit '%d' at rate %d with payload %d\n", digit, sample_rate, payload);
 
 	rtp->dtmfmute = ast_tvadd(ast_tvnow(), ast_tv(0, 500000));
 	rtp->send_duration = 160;
-	rtp->lastts += calc_txstamp(rtp, NULL) * DTMF_SAMPLE_RATE_MS;
+	rtp->dtmf_samplerate_ms = (sample_rate / 1000);
+	rtp->lastts += calc_txstamp(rtp, NULL) * rtp->dtmf_samplerate_ms;
 	rtp->lastdigitts = rtp->lastts + rtp->send_duration;
 
 	/* Create the actual packet that we will be sending */
@@ -4313,7 +4431,7 @@ static int ast_rtp_dtmf_continuation(struct ast_rtp_instance *instance)
 	/* And now we increment some values for the next time we swing by */
 	rtp->seqno++;
 	rtp->send_duration += 160;
-	rtp->lastts += calc_txstamp(rtp, NULL) * DTMF_SAMPLE_RATE_MS;
+	rtp->lastts += calc_txstamp(rtp, NULL) * rtp->dtmf_samplerate_ms;
 
 	return 0;
 }
@@ -4391,7 +4509,7 @@ static int ast_rtp_dtmf_end_with_duration(struct ast_rtp_instance *instance, cha
 	res = 0;
 
 	/* Oh and we can't forget to turn off the stuff that says we are sending DTMF */
-	rtp->lastts += calc_txstamp(rtp, NULL) * DTMF_SAMPLE_RATE_MS;
+	rtp->lastts += calc_txstamp(rtp, NULL) * rtp->dtmf_samplerate_ms;
 
 	/* Reset the smoother as the delivery time stored in it is now out of date */
 	if (rtp->smoother) {
@@ -6159,7 +6277,7 @@ static double calc_media_experience_score(struct ast_rtp_instance *instance,
 	} else if (r_value > 100) {
 		pseudo_mos = 4.5;
 	} else {
-		pseudo_mos = 1 + (0.035 * r_value) + (r_value * (r_value - 60) * (100 - r_value) * 0.0000007);
+		pseudo_mos = 1 + (0.035 * r_value) + (r_value * (r_value - 60) * (100 - r_value) * 0.000007);
 	}
 
 	/*

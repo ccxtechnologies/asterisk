@@ -165,14 +165,41 @@
 			<parameter name="Username" required="true">
 				<para>Username to login with as specified in manager.conf.</para>
 			</parameter>
+			<parameter name="AuthType">
+				<para>Authorization type. Valid values are:</para>
+				<enumlist>
+					<enum name="plain"><para>Plain text secret. (default)</para></enum>
+					<enum name="MD5"><para>MD5 hashed secret.</para></enum>
+				</enumlist>
+			</parameter>
 			<parameter name="Secret">
-				<para>Secret to login with as specified in manager.conf.</para>
+				<para>Plain text secret to login with as specified in manager.conf.</para>
+			</parameter>
+			<parameter name="Key">
+				<para>Key to use with MD5 authentication.  To create the key, you must
+				initialize a new MD5 hash, call the <literal>Challenge</literal> AMI action,
+				update the hash with the response, then update the hash with the secret as specified
+				in manager.conf.  The key value must be the final result of the hash
+				as a 32 character lower-case hex string without any "0x" prepended.
+				See the description for an example of creating a key in Python.</para>
+			</parameter>
+			<parameter name="Events">
+				<xi:include xpointer="xpointer(/docs/manager[@name='Events']/syntax/parameter[@name='EventMask']/enumlist)" />
 			</parameter>
 		</syntax>
 		<description>
 			<para>Login Manager.</para>
+			<example title="Create an MD5 Key in Python">
+				import hashlib
+				m = hashlib.md5()
+				m.update(response_from_challenge)
+				m.update(your_secret)
+				key = m.hexdigest()
+				## '031edd7d41651593c5fe5c006fa5752b'
+			</example>
 		</description>
 		<see-also>
+			<ref type="manager">Challenge</ref>
 			<ref type="manager">Logoff</ref>
 		</see-also>
 	</manager>
@@ -712,6 +739,9 @@
 			<parameter name="OtherChannelId">
 				<para>Channel UniqueId to be set on the second local channel.</para>
 			</parameter>
+			<parameter name="PreDialGoSub">
+				<para>PreDialGoSub Context,Extension,Priority to set options/headers needed before start the outgoing extension</para>
+			</parameter>
 		</syntax>
 		<description>
 			<para>Generates an outgoing call to a
@@ -1112,9 +1142,17 @@
 					<enum name="load" />
 					<enum name="unload" />
 					<enum name="reload" />
+					<enum name="refresh">
+						<para>Completely unload and load again a specified module.</para>
+					</enum>
 				</enumlist>
 				<para>If no module is specified for a <literal>reload</literal> loadtype,
 				all modules are reloaded.</para>
+			</parameter>
+			<parameter name="Recursive" required="false">
+				<para>For <literal>refresh</literal> operations, attempt to recursively
+				unload any other modules that are dependent on this module, if that would
+				allow it to successfully unload, and load them again afterwards.</para>
 			</parameter>
 		</syntax>
 		<description>
@@ -1728,6 +1766,7 @@ struct mansession_session {
 	time_t noncetime;	/*!< Timer for nonce value expiration */
 	unsigned long oldnonce;	/*!< Stale nonce value */
 	unsigned long nc;	/*!< incremental  nonce counter */
+	unsigned int kicked:1;	/*!< Flag set if session is forcibly kicked */
 	ast_mutex_t notify_lock; /*!< Lock for notifying this session of events */
 	AST_LIST_HEAD_NOLOCK(mansession_datastores, ast_datastore) datastores; /*!< Data stores on the session */
 	AST_LIST_ENTRY(mansession_session) list;
@@ -2772,14 +2811,84 @@ static char *handle_showmancmds(struct ast_cli_entry *e, int cmd, struct ast_cli
 	return CLI_SUCCESS;
 }
 
+/*! \brief CLI command manager kick session */
+static char *handle_kickmanconn(struct ast_cli_entry *e, int cmd, struct ast_cli_args *a)
+{
+	struct ao2_container *sessions;
+	struct mansession_session *session;
+	struct ao2_iterator i;
+	int fd = -1;
+	int found = 0;
+
+	switch (cmd) {
+	case CLI_INIT:
+		e->command = "manager kick session";
+		e->usage =
+			"Usage: manager kick session <file descriptor>\n"
+			"	Kick an active Asterisk Manager Interface session\n";
+		return NULL;
+	case CLI_GENERATE:
+		return NULL;
+	}
+
+	if (a->argc != 4) {
+		return CLI_SHOWUSAGE;
+	}
+
+	fd = atoi(a->argv[3]);
+	if (fd <= 0) { /* STDOUT won't be a valid AMI fd either */
+		ast_cli(a->fd, "Invalid AMI file descriptor: %s\n", a->argv[3]);
+		return CLI_FAILURE;
+	}
+
+	sessions = ao2_global_obj_ref(mgr_sessions);
+	if (sessions) {
+		i = ao2_iterator_init(sessions, 0);
+		ao2_ref(sessions, -1);
+		while ((session = ao2_iterator_next(&i))) {
+			ao2_lock(session);
+			if (session->stream) {
+				if (ast_iostream_get_fd(session->stream) == fd) {
+					if (session->kicked) {
+						ast_cli(a->fd, "Manager session using file descriptor %d has already been kicked\n", fd);
+						ao2_unlock(session);
+						unref_mansession(session);
+						break;
+					}
+					fd = ast_iostream_get_fd(session->stream);
+					found = fd;
+					ast_cli(a->fd, "Kicking manager session connected using file descriptor %d\n", fd);
+					ast_mutex_lock(&session->notify_lock);
+					session->kicked = 1;
+					if (session->waiting_thread != AST_PTHREADT_NULL) {
+						pthread_kill(session->waiting_thread, SIGURG);
+					}
+					ast_mutex_unlock(&session->notify_lock);
+					ao2_unlock(session);
+					unref_mansession(session);
+					break;
+				}
+			}
+			ao2_unlock(session);
+			unref_mansession(session);
+		}
+		ao2_iterator_destroy(&i);
+	}
+
+	if (!found) {
+		ast_cli(a->fd, "No manager session found using file descriptor %d\n", fd);
+	}
+	return CLI_SUCCESS;
+}
+
 /*! \brief CLI command manager list connected */
 static char *handle_showmanconn(struct ast_cli_entry *e, int cmd, struct ast_cli_args *a)
 {
 	struct ao2_container *sessions;
 	struct mansession_session *session;
 	time_t now = time(NULL);
-#define HSMCONN_FORMAT1 "  %-15.15s  %-55.55s  %-10.10s  %-10.10s  %-8.8s  %-8.8s  %-5.5s  %-5.5s\n"
-#define HSMCONN_FORMAT2 "  %-15.15s  %-55.55s  %-10d  %-10d  %-8d  %-8d  %-5.5d  %-5.5d\n"
+#define HSMCONN_FORMAT1 "  %-15.15s  %-55.55s  %-10.10s  %-10.10s  %-8.8s  %-8.8s  %-10.10s  %-10.10s\n"
+#define HSMCONN_FORMAT2 "  %-15.15s  %-55.55s  %-10d  %-10d  %-8d  %-8d  %-10.10d  %-10.10d\n"
 	int count = 0;
 	struct ao2_iterator i;
 
@@ -2795,7 +2904,7 @@ static char *handle_showmanconn(struct ast_cli_entry *e, int cmd, struct ast_cli
 		return NULL;
 	}
 
-	ast_cli(a->fd, HSMCONN_FORMAT1, "Username", "IP Address", "Start", "Elapsed", "FileDes", "HttpCnt", "Read", "Write");
+	ast_cli(a->fd, HSMCONN_FORMAT1, "Username", "IP Address", "Start", "Elapsed", "FileDes", "HttpCnt", "ReadPerms", "WritePerms");
 
 	sessions = ao2_global_obj_ref(mgr_sessions);
 	if (sessions) {
@@ -3752,12 +3861,43 @@ void astman_live_dangerously(int new_live_dangerously)
 	live_dangerously = new_live_dangerously;
 }
 
+/**
+ * \brief Check if a file is restricted or not
+ *
+ * \return 0 on success
+ * \return 1 on restricted file
+ * \return -1 on failure
+ */
 static int restrictedFile(const char *filename)
 {
-	if (!live_dangerously && !strncasecmp(filename, "/", 1) &&
-		 strncasecmp(filename, ast_config_AST_CONFIG_DIR, strlen(ast_config_AST_CONFIG_DIR))) {
+	char *stripped_filename;
+	RAII_VAR(char *, path, NULL, ast_free);
+	RAII_VAR(char *, real_path, NULL, ast_std_free);
+
+	if (live_dangerously) {
+		return 0;
+	}
+
+	stripped_filename = ast_strip(ast_strdupa(filename));
+
+	/* If the file path starts with '/', don't prepend ast_config_AST_CONFIG_DIR */
+	if (stripped_filename[0] == '/') {
+		real_path = realpath(stripped_filename, NULL);
+	} else {
+		if (ast_asprintf(&path, "%s/%s", ast_config_AST_CONFIG_DIR, stripped_filename) == -1) {
+			return -1;
+		}
+		real_path = realpath(path, NULL);
+	}
+
+	if (!real_path) {
+		return -1;
+	}
+
+	if (!ast_begins_with(real_path, ast_config_AST_CONFIG_DIR)) {
 		return 1;
 	}
+
 	return 0;
 }
 
@@ -3770,6 +3910,7 @@ static int action_getconfig(struct mansession *s, const struct message *m)
 	const char *category_name;
 	int catcount = 0;
 	int lineno = 0;
+	int ret = 0;
 	struct ast_category *cur_category = NULL;
 	struct ast_variable *v;
 	struct ast_flags config_flags = { CONFIG_FLAG_WITHCOMMENTS | CONFIG_FLAG_NOCACHE };
@@ -3779,8 +3920,12 @@ static int action_getconfig(struct mansession *s, const struct message *m)
 		return 0;
 	}
 
-	if (restrictedFile(fn)) {
+	ret = restrictedFile(fn);
+	if (ret == 1) {
 		astman_send_error(s, m, "File requires escalated priveledges");
+		return 0;
+	} else if (ret == -1) {
+		astman_send_error(s, m, "Config file not found");
 		return 0;
 	}
 
@@ -4293,9 +4438,10 @@ static int action_updateconfig(struct mansession *s, const struct message *m)
 		astman_send_ack(s, m, NULL);
 		if (!ast_strlen_zero(rld)) {
 			if (ast_true(rld)) {
-				rld = NULL;
+				ast_module_reload(NULL); /* Reload everything */
+			} else if (!ast_false(rld)) {
+				ast_module_reload(rld); /* Reload the specific module */
 			}
-			ast_module_reload(rld);
 		}
 	} else {
 		ast_config_destroy(cfg);
@@ -4613,7 +4759,9 @@ static int action_challenge(struct mansession *s, const struct message *m)
 	return 0;
 }
 
-static int action_hangup(struct mansession *s, const struct message *m)
+int ast_manager_hangup_helper(struct mansession *s,
+	const struct message *m, manager_hangup_handler_t hangup_handler,
+	manager_hangup_cause_validator_t cause_validator)
 {
 	struct ast_channel *c = NULL;
 	int causecode = 0; /* all values <= 0 mean 'do not set hangupcause in channel' */
@@ -4637,7 +4785,9 @@ static int action_hangup(struct mansession *s, const struct message *m)
 		idText[0] = '\0';
 	}
 
-	if (!ast_strlen_zero(cause)) {
+	if (cause_validator) {
+		causecode = cause_validator(name_or_regex, cause);
+	} else if (!ast_strlen_zero(cause)) {
 		char *endptr;
 		causecode = strtol(cause, &endptr, 10);
 		if (causecode < 0 || causecode > 127 || *endptr != '\0') {
@@ -4664,7 +4814,7 @@ static int action_hangup(struct mansession *s, const struct message *m)
 			ast_sockaddr_stringify_addr(&s->session->addr),
 			ast_channel_name(c));
 
-		ast_channel_softhangup_withcause_locked(c, causecode);
+		hangup_handler(c, causecode);
 		c = ast_channel_unref(c);
 
 		astman_send_ack(s, m, "Channel Hungup");
@@ -4710,7 +4860,7 @@ static int action_hangup(struct mansession *s, const struct message *m)
 				ast_sockaddr_stringify_addr(&s->session->addr),
 				ast_channel_name(c));
 
-			ast_channel_softhangup_withcause_locked(c, causecode);
+			hangup_handler(c, causecode);
 			channels_matched++;
 
 			astman_append(s,
@@ -4728,6 +4878,12 @@ static int action_hangup(struct mansession *s, const struct message *m)
 	astman_send_list_complete(s, m, "ChannelsHungupListComplete", channels_matched);
 
 	return 0;
+}
+
+static int action_hangup(struct mansession *s, const struct message *m)
+{
+	return ast_manager_hangup_helper(s, m,
+		ast_channel_softhangup_withcause_locked, NULL);
 }
 
 static int action_setvar(struct mansession *s, const struct message *m)
@@ -6169,6 +6325,145 @@ aocmessage_cleanup:
 	return 0;
 }
 
+struct originate_permissions_entry {
+	const char *search;
+	int permission;
+	int (*searchfn)(const char *app, const char *data, const char *search);
+};
+
+/*!
+ * \internal
+ * \brief Check if the application is allowed for Originate
+ *
+ * \param app The "app" parameter
+ * \param data The "appdata" parameter (ignored)
+ * \param search The search string
+ * \retval 1 Match
+ * \retval 0 No match
+ */
+static int app_match(const char *app, const char *data, const char *search)
+{
+	/*
+	 * We use strcasestr so we don't have to trim any blanks
+	 * from the front or back of the string.
+	 */
+	return !!(strcasestr(app, search));
+}
+
+/*!
+ * \internal
+ * \brief Check if the appdata is allowed for Originate
+ *
+ * \param app The "app" parameter (ignored)
+ * \param data The "appdata" parameter
+ * \param search The search string
+ * \retval 1 Match
+ * \retval 0 No match
+ */
+static int appdata_match(const char *app, const char *data, const char *search)
+{
+	return !!(strstr(data, search));
+}
+
+/*!
+ * \internal
+ * \brief Check if the Queue application is allowed for Originate
+ *
+ * It's only allowed if there's no AGI parameter set
+ *
+ * \param app The "app" parameter
+ * \param data The "appdata" parameter
+ * \param search The search string
+ * \retval 1 Match
+ * \retval 0 No match
+ */
+static int queue_match(const char *app, const char *data, const char *search)
+{
+	char *parse;
+	AST_DECLARE_APP_ARGS(args,
+		AST_APP_ARG(queuename);
+		AST_APP_ARG(options);
+		AST_APP_ARG(url);
+		AST_APP_ARG(announceoverride);
+		AST_APP_ARG(queuetimeoutstr);
+		AST_APP_ARG(agi);
+		AST_APP_ARG(gosub);
+		AST_APP_ARG(rule);
+		AST_APP_ARG(position);
+	);
+
+	if (!strcasestr(app, "queue")) {
+		return 0;
+	}
+
+	parse = ast_strdupa(data);
+	AST_STANDARD_APP_ARGS(args, parse);
+
+	/*
+	 * The Queue application is fine unless the AGI parameter is set.
+	 * If it is, we need to check the user's permissions.
+	 */
+	return !ast_strlen_zero(args.agi);
+}
+
+/*
+ * The Originate application and application data are passed
+ * to each searchfn in the list.  If a searchfn returns true
+ * and the user's permissions don't include the permissions specified
+ * in the list entry, the Originate action will be denied.
+ *
+ * If no searchfn returns true, the Originate action is allowed.
+ */
+static struct originate_permissions_entry originate_app_permissions[] = {
+	/*
+	 * The app_match function checks if the search string is
+	 * anywhere in the app parameter.  The check is case-insensitive.
+	 */
+	{ "agi", EVENT_FLAG_SYSTEM, app_match },
+	{ "dbdeltree", EVENT_FLAG_SYSTEM, app_match },
+	{ "exec", EVENT_FLAG_SYSTEM, app_match },
+	{ "externalivr", EVENT_FLAG_SYSTEM, app_match },
+	{ "mixmonitor", EVENT_FLAG_SYSTEM, app_match },
+	{ "originate", EVENT_FLAG_SYSTEM, app_match },
+	{ "reload", EVENT_FLAG_SYSTEM, app_match },
+	{ "system", EVENT_FLAG_SYSTEM, app_match },
+	/*
+	 * Since the queue_match function specifically checks
+	 * for the presence of the AGI parameter, we'll allow
+	 * the call if the user has either the AGI or SYSTEM
+	 * permission.
+	 */
+	{ "queue", EVENT_FLAG_AGI | EVENT_FLAG_SYSTEM, queue_match },
+	/*
+	 * The appdata_match function checks if the search string is
+	 * anywhere in the appdata parameter.  Unlike app_match,
+	 * the check is case-sensitive.  These are generally
+	 * dialplan functions.
+	 */
+	{ "CURL", EVENT_FLAG_SYSTEM, appdata_match },
+	{ "DB", EVENT_FLAG_SYSTEM, appdata_match },
+	{ "EVAL", EVENT_FLAG_SYSTEM, appdata_match },
+	{ "FILE", EVENT_FLAG_SYSTEM, appdata_match },
+	{ "ODBC", EVENT_FLAG_SYSTEM, appdata_match },
+	{ "REALTIME", EVENT_FLAG_SYSTEM, appdata_match },
+	{ "SHELL", EVENT_FLAG_SYSTEM, appdata_match },
+	{ NULL, 0 },
+};
+
+static int is_originate_app_permitted(const char *app, const char *data,
+	int permission)
+{
+	int i;
+
+	for (i = 0; originate_app_permissions[i].search; i++) {
+		if (originate_app_permissions[i].searchfn(app, data, originate_app_permissions[i].search)) {
+			return !!(permission & originate_app_permissions[i].permission);
+		}
+	}
+
+	return 1;
+}
+
 static int action_originate(struct mansession *s, const struct message *m)
 {
 	const char *name = astman_get_header(m, "Channel");
@@ -6188,6 +6483,8 @@ static int action_originate(struct mansession *s, const struct message *m)
 		.uniqueid = astman_get_header(m, "ChannelId"),
 		.uniqueid2 = astman_get_header(m, "OtherChannelId"),
 	};
+	const char *gosub = astman_get_header(m, "PreDialGoSub");
+
 	struct ast_variable *vars = NULL;
 	char *tech, *data;
 	char *l = NULL, *n = NULL;
@@ -6260,26 +6557,8 @@ static int action_originate(struct mansession *s, const struct message *m)
 	}
 
 	if (!ast_strlen_zero(app) && s->session) {
-		int bad_appdata = 0;
-		/* To run the System application (or anything else that goes to
-		 * shell), you must have the additional System privilege */
-		if (!(s->session->writeperm & EVENT_FLAG_SYSTEM)
-			&& (
-				strcasestr(app, "system") ||      /* System(rm -rf /)
-				                                     TrySystem(rm -rf /)       */
-				strcasestr(app, "exec") ||        /* Exec(System(rm -rf /))
-				                                     TryExec(System(rm -rf /)) */
-				strcasestr(app, "agi") ||         /* AGI(/bin/rm,-rf /)
-				                                     EAGI(/bin/rm,-rf /)       */
-				strcasestr(app, "mixmonitor") ||  /* MixMonitor(blah,,rm -rf)  */
-				strcasestr(app, "externalivr") || /* ExternalIVR(rm -rf)       */
-				strcasestr(app, "originate") ||   /* Originate(Local/1234,app,System,rm -rf) */
-				(strstr(appdata, "SHELL") && (bad_appdata = 1)) ||       /* NoOp(${SHELL(rm -rf /)})  */
-				(strstr(appdata, "EVAL") && (bad_appdata = 1))           /* NoOp(${EVAL(${some_var_containing_SHELL})}) */
-				)) {
-			char error_buf[64];
-			snprintf(error_buf, sizeof(error_buf), "Originate Access Forbidden: %s", bad_appdata ? "Data" : "Application");
-			astman_send_error(s, m, error_buf);
+		if (!is_originate_app_permitted(app, appdata, s->session->writeperm)) {
+			astman_send_error(s, m, "Originate Access Forbidden: app or data blacklisted");
 			res = 0;
 			goto fast_orig_cleanup;
 		}
@@ -6357,10 +6636,10 @@ static int action_originate(struct mansession *s, const struct message *m)
 		ast_variables_destroy(vars);
 	} else {
 		if (exten && context && pi) {
-			res = ast_pbx_outgoing_exten(tech, cap, data, to,
+			res = ast_pbx_outgoing_exten_predial(tech, cap, data, to,
 					context, exten, pi, &reason, AST_OUTGOING_WAIT,
 					l, n, vars, account, NULL, bridge_early,
-					assignedids.uniqueid ? &assignedids : NULL);
+					assignedids.uniqueid ? &assignedids : NULL , gosub);
 			ast_variables_destroy(vars);
 		} else {
 			astman_send_error(s, m, "Originate with 'Exten' requires 'Context' and 'Priority'");
@@ -6745,6 +7024,7 @@ static int action_coresettings(struct mansession *s, const struct message *m)
 			"CoreRealTimeEnabled: %s\r\n"
 			"CoreCDRenabled: %s\r\n"
 			"CoreHTTPenabled: %s\r\n"
+			"SoundsSearchCustomDir: %s\r\n"
 			"\r\n",
 			idText,
 			AMI_VERSION,
@@ -6757,7 +7037,8 @@ static int action_coresettings(struct mansession *s, const struct message *m)
 			ast_option_maxfiles,
 			AST_CLI_YESNO(ast_realtime_enabled()),
 			AST_CLI_YESNO(ast_cdr_is_enabled()),
-			AST_CLI_YESNO(ast_webmanager_check_enabled())
+			AST_CLI_YESNO(ast_webmanager_check_enabled()),
+			AST_CLI_YESNO(ast_opt_sounds_search_custom)
 			);
 	return 0;
 }
@@ -7032,6 +7313,13 @@ static int action_coreshowchannelmap(struct mansession *s, const struct message 
 		return 0;
 	}
 
+	if (ast_strlen_zero(channel_snapshot->bridge->id)) {
+		astman_send_listack(s, m, "Channel map will follow", "start");
+		astman_send_list_complete_start(s, m, "CoreShowChannelMapComplete", 0);
+		astman_send_list_complete_end(s);
+		return 0;
+	}
+
 	bridge_snapshot = ast_bridge_get_snapshot_by_uniqueid(channel_snapshot->bridge->id);
 	if (!bridge_snapshot) {
 		astman_send_listack(s, m, "Channel map will follow", "start");
@@ -7060,7 +7348,7 @@ static int action_coreshowchannelmap(struct mansession *s, const struct message 
 			"Event: CoreShowChannelMap\r\n"
 			"%s"
 			"Channel: %s\r\n"
-			"ConnectedChannel: %s\r\n\n",
+			"ConnectedChannel: %s\r\n\r\n",
 			id_text,
 			channel_name,
 			current_channel_name);
@@ -7123,6 +7411,7 @@ static int manager_moduleload(struct mansession *s, const struct message *m)
 	int res;
 	const char *module = astman_get_header(m, "Module");
 	const char *loadtype = astman_get_header(m, "LoadType");
+	const char *recursive = astman_get_header(m, "Recursive");
 
 	if (!loadtype || strlen(loadtype) == 0) {
 		astman_send_error(s, m, "Incomplete ModuleLoad action.");
@@ -7144,6 +7433,13 @@ static int manager_moduleload(struct mansession *s, const struct message *m)
 			astman_send_error(s, m, "Could not unload module.");
 		} else {
 			astman_send_ack(s, m, "Module unloaded.");
+		}
+	} else if (!strcasecmp(loadtype, "refresh")) {
+		res = ast_refresh_resource(module, AST_FORCE_SOFT, !ast_strlen_zero(recursive) && ast_true(recursive));
+		if (res) {
+			astman_send_error(s, m, "Could not refresh module.");
+		} else {
+			astman_send_ack(s, m, "Module unloaded and loaded.");
 		}
 	} else if (!strcasecmp(loadtype, "reload")) {
 		/* TODO: Unify the ack/error messages here with action_reload */
@@ -7416,6 +7712,10 @@ static int get_input(struct mansession *s, char *output)
 		ast_mutex_unlock(&s->session->notify_lock);
 	}
 	if (res < 0) {
+		if (s->session->kicked) {
+			ast_debug(1, "Manager session has been kicked\n");
+			return -1;
+		}
 		/* If we get a signal from some other thread (typically because
 		 * there are new events queued), return 0 to notify the caller.
 		 */
@@ -7615,7 +7915,7 @@ static void *session_do(void *data)
 
 	astman_append(&s, "Asterisk Call Manager/%s\r\n", AMI_VERSION);	/* welcome prompt */
 	for (;;) {
-		if ((res = do_message(&s)) < 0 || s.write_error) {
+		if ((res = do_message(&s)) < 0 || s.write_error || session->kicked) {
 			break;
 		}
 		if (session->authenticated) {
@@ -7625,7 +7925,7 @@ static void *session_do(void *data)
 	/* session is over, explain why and terminate */
 	if (session->authenticated) {
 		if (manager_displayconnects(session)) {
-			ast_verb(2, "Manager '%s' logged off from %s\n", session->username, ast_sockaddr_stringify_addr(&session->addr));
+			ast_verb(2, "Manager '%s' %s from %s\n", session->username, session->kicked ? "kicked" : "logged off", ast_sockaddr_stringify_addr(&session->addr));
 		}
 	} else {
 		ast_atomic_fetchadd_int(&unauth_sessions, -1);
@@ -7906,7 +8206,7 @@ int ast_manager_unregister(const char *action)
 		ao2_unlock(cur);
 
 		ao2_t_ref(cur, -1, "action object removed from list");
-		ast_verb(2, "Manager unregistered action %s\n", action);
+		ast_verb(5, "Manager unregistered action %s\n", action);
 	}
 
 	return 0;
@@ -7981,7 +8281,7 @@ static int ast_manager_register_struct(struct manager_action *act)
 		AST_RWLIST_INSERT_HEAD(&actions, act, list);
 	}
 
-	ast_verb(2, "Manager registered action %s\n", act->action);
+	ast_verb(5, "Manager registered action %s\n", act->action);
 
 	AST_RWLIST_UNLOCK(&actions);
 
@@ -9542,6 +9842,7 @@ static struct ast_cli_entry cli_manager[] = {
 	AST_CLI_DEFINE(handle_showmancmd, "Show a manager interface command"),
 	AST_CLI_DEFINE(handle_showmancmds, "List manager interface commands"),
 	AST_CLI_DEFINE(handle_showmanconn, "List connected manager interface users"),
+	AST_CLI_DEFINE(handle_kickmanconn, "Kick a connected manager interface connection"),
 	AST_CLI_DEFINE(handle_showmaneventq, "List manager interface queued events"),
 	AST_CLI_DEFINE(handle_showmanagers, "List configured manager users"),
 	AST_CLI_DEFINE(handle_showmanager, "Display information on a specific manager user"),

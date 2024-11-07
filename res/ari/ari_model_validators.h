@@ -1346,6 +1346,7 @@ ari_validator ast_ari_validate_application_fn(void);
  * Channel
  * - accountcode: string (required)
  * - caller: CallerID (required)
+ * - caller_rdnis: string
  * - channelvars: object
  * - connected: CallerID (required)
  * - creationtime: Date (required)
@@ -1355,6 +1356,7 @@ ari_validator ast_ari_validate_application_fn(void);
  * - name: string (required)
  * - protocol_id: string (required)
  * - state: string (required)
+ * - tenantid: string
  * Dialed
  * DialplanCEP
  * - app_data: string (required)

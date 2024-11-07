@@ -58,7 +58,7 @@ CREATE TABLE sippeers (
     regexten VARCHAR(40), 
     fromdomain VARCHAR(40), 
     fromuser VARCHAR(40), 
-    qualify VARCHAR(40), 
+    `qualify` VARCHAR(40), 
     defaultip VARCHAR(45), 
     rtptimeout INTEGER, 
     rtpholdtimeout INTEGER, 
@@ -146,7 +146,7 @@ CREATE TABLE iaxfriends (
     disallow VARCHAR(200), 
     allow VARCHAR(200), 
     codecpriority VARCHAR(40), 
-    qualify VARCHAR(10), 
+    `qualify` VARCHAR(10), 
     qualifysmoothing ENUM('yes','no'), 
     qualifyfreqok VARCHAR(10), 
     qualifyfreqnotok VARCHAR(10), 
@@ -1417,4 +1417,285 @@ UPDATE alembic_version SET version_num='4042a0ff4d9f' WHERE alembic_version.vers
 ALTER TABLE musiconhold ADD COLUMN loop_last ENUM('yes','no');
 
 UPDATE alembic_version SET version_num='f5b0e7427449' WHERE alembic_version.version_num = '4042a0ff4d9f';
+
+-- Running upgrade f5b0e7427449 -> dac2b4c328b8
+
+ALTER TABLE ps_aors MODIFY id VARCHAR(255) NULL;
+
+ALTER TABLE ps_aors MODIFY outbound_proxy VARCHAR(255) NULL;
+
+ALTER TABLE ps_auths MODIFY id VARCHAR(255) NULL;
+
+ALTER TABLE ps_auths MODIFY realm VARCHAR(255) NULL;
+
+ALTER TABLE ps_contacts MODIFY outbound_proxy VARCHAR(255) NULL;
+
+ALTER TABLE ps_contacts MODIFY endpoint VARCHAR(255) NULL;
+
+ALTER TABLE ps_domain_aliases MODIFY id VARCHAR(255) NULL;
+
+ALTER TABLE ps_domain_aliases MODIFY domain VARCHAR(255) NULL;
+
+ALTER TABLE ps_endpoint_id_ips MODIFY id VARCHAR(255) NULL;
+
+ALTER TABLE ps_endpoint_id_ips MODIFY endpoint VARCHAR(255) NULL;
+
+ALTER TABLE ps_endpoints MODIFY id VARCHAR(255) NULL;
+
+ALTER TABLE ps_endpoints MODIFY aors VARCHAR(2048) NULL;
+
+ALTER TABLE ps_endpoints MODIFY auth VARCHAR(255) NULL;
+
+ALTER TABLE ps_endpoints MODIFY outbound_auth VARCHAR(255) NULL;
+
+ALTER TABLE ps_endpoints MODIFY outbound_proxy VARCHAR(255) NULL;
+
+ALTER TABLE ps_inbound_publications MODIFY id VARCHAR(255) NULL;
+
+ALTER TABLE ps_inbound_publications MODIFY endpoint VARCHAR(255) NULL;
+
+ALTER TABLE ps_outbound_publishes MODIFY id VARCHAR(255) NULL;
+
+ALTER TABLE ps_outbound_publishes MODIFY outbound_auth VARCHAR(255) NULL;
+
+ALTER TABLE ps_registrations MODIFY id VARCHAR(255) NULL;
+
+ALTER TABLE ps_registrations MODIFY outbound_auth VARCHAR(255) NULL;
+
+ALTER TABLE ps_registrations MODIFY outbound_proxy VARCHAR(255) NULL;
+
+ALTER TABLE ps_registrations MODIFY endpoint VARCHAR(255) NULL;
+
+UPDATE alembic_version SET version_num='dac2b4c328b8' WHERE alembic_version.version_num = 'f5b0e7427449';
+
+-- Running upgrade dac2b4c328b8 -> 37a5332640e2
+
+ALTER TABLE ps_transports MODIFY method ENUM('default','unspecified','tlsv1','tlsv1_1','tlsv1_2','tlsv1_3','sslv2','sslv23','sslv3') NULL;
+
+UPDATE alembic_version SET version_num='37a5332640e2' WHERE alembic_version.version_num = 'dac2b4c328b8';
+
+-- Running upgrade 37a5332640e2 -> 24c12d8e9014
+
+UPDATE alembic_version SET version_num='24c12d8e9014' WHERE alembic_version.version_num = '37a5332640e2';
+
+-- Running upgrade 24c12d8e9014 -> bd335bae5d33
+
+CREATE TABLE stir_tn (
+    id VARCHAR(80) NOT NULL, 
+    private_key_file VARCHAR(1024), 
+    public_cert_url VARCHAR(1024), 
+    attest_level VARCHAR(1), 
+    send_mky ENUM('0','1','off','on','false','true','no','yes'), 
+    PRIMARY KEY (id)
+);
+
+UPDATE alembic_version SET version_num='bd335bae5d33' WHERE alembic_version.version_num = '24c12d8e9014';
+
+-- Running upgrade bd335bae5d33 -> 74dc751dfe8e
+
+ALTER TABLE ps_aors MODIFY authenticate_qualify ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_aors MODIFY remove_existing ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_aors MODIFY support_path ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_asterisk_publications MODIFY device_state ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_asterisk_publications MODIFY mailbox_state ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_contacts MODIFY authenticate_qualify ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_contacts MODIFY prune_on_boot ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoint_id_ips MODIFY srv_lookups ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY accept_multiple_sdp_answers ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY aggregate_mwi ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY allow_overlap ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY allow_subscribe ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY allow_transfer ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY asymmetric_rtp_codec ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY bind_rtp_to_media_address ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY bundle ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY direct_media ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY disable_direct_media_on_nat ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY dtls_auto_generate_cert ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY fax_detect ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY follow_early_media_fork ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY force_avp ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY force_rport ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY g726_non_standard ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY ice_support ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY inband_progress ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY media_encryption_optimistic ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY media_use_received_transport ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY moh_passthrough ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY notify_early_inuse_ringing ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY one_touch_recording ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY preferred_codec_only ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY refer_blind_progress ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY rewrite_contact ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY rpid_immediate ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY rtcp_mux ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY rtp_ipv6 ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY rtp_symmetric ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY send_diversion ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY send_pai ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY send_rpid ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY srtp_tag_32 ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY suppress_q850_reason_headers ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY t38_udptl ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY t38_udptl_ipv6 ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY t38_udptl_nat ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY trust_id_inbound ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY trust_id_outbound ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY use_avpf ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY use_ptime ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY user_eq_phone ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_endpoints MODIFY webrtc ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_globals MODIFY disable_multi_domain ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_globals MODIFY ignore_uri_user_options ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_globals MODIFY mwi_disable_initial_unsolicited ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_outbound_publishes MODIFY multi_user ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_registrations MODIFY auth_rejection_permanent ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_registrations MODIFY line ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_registrations MODIFY support_path ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_resource_list MODIFY full_state ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_subscription_persistence MODIFY prune_on_boot ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_systems MODIFY accept_multiple_sdp_answers ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_systems MODIFY compact_headers ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_systems MODIFY disable_tcp_switch ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_systems MODIFY follow_early_media_fork ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_transports MODIFY allow_reload ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_transports MODIFY allow_wildcard_certs ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_transports MODIFY require_client_cert ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_transports MODIFY symmetric_transport ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_transports MODIFY verify_client ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+ALTER TABLE ps_transports MODIFY verify_server ENUM('0','1','off','on','false','true','no','yes') NULL;
+
+UPDATE alembic_version SET version_num='74dc751dfe8e' WHERE alembic_version.version_num = 'bd335bae5d33';
+
+-- Running upgrade 74dc751dfe8e -> 8fce8496f03e
+
+ALTER TABLE ps_transports ADD COLUMN tcp_keepalive_enable BOOL;
+
+ALTER TABLE ps_transports ADD COLUMN tcp_keepalive_idle_time INTEGER;
+
+ALTER TABLE ps_transports ADD COLUMN tcp_keepalive_interval_time INTEGER;
+
+ALTER TABLE ps_transports ADD COLUMN tcp_keepalive_probe_count INTEGER;
+
+UPDATE alembic_version SET version_num='8fce8496f03e' WHERE alembic_version.version_num = '74dc751dfe8e';
+
+-- Running upgrade 8fce8496f03e -> cf150a175fd3
+
+ALTER TABLE ps_endpoint_id_ips ADD COLUMN match_request_uri VARCHAR(255);
+
+UPDATE alembic_version SET version_num='cf150a175fd3' WHERE alembic_version.version_num = '8fce8496f03e';
+
+-- Running upgrade cf150a175fd3 -> d5122576cca8
+
+ALTER TABLE ps_endpoint_id_ips ADD COLUMN transport VARCHAR(128);
+
+UPDATE alembic_version SET version_num='d5122576cca8' WHERE alembic_version.version_num = 'cf150a175fd3';
+
+-- Running upgrade d5122576cca8 -> 6c475a93f48a
+
+ALTER TABLE ps_aors MODIFY id VARCHAR(255) NOT NULL;
+
+ALTER TABLE ps_auths MODIFY id VARCHAR(255) NOT NULL;
+
+ALTER TABLE ps_domain_aliases MODIFY id VARCHAR(255) NOT NULL;
+
+ALTER TABLE ps_endpoint_id_ips MODIFY id VARCHAR(255) NOT NULL;
+
+ALTER TABLE ps_endpoints MODIFY id VARCHAR(255) NOT NULL;
+
+ALTER TABLE ps_inbound_publications MODIFY id VARCHAR(255) NOT NULL;
+
+ALTER TABLE ps_outbound_publishes MODIFY id VARCHAR(255) NOT NULL;
+
+ALTER TABLE ps_registrations MODIFY id VARCHAR(255) NOT NULL;
+
+UPDATE alembic_version SET version_num='6c475a93f48a' WHERE alembic_version.version_num = 'd5122576cca8';
+
+-- Running upgrade 6c475a93f48a -> bd9c5159c7ea
+
+ALTER TABLE ps_endpoint_id_ips DROP COLUMN transport;
+
+UPDATE alembic_version SET version_num='bd9c5159c7ea' WHERE alembic_version.version_num = '6c475a93f48a';
+
+-- Running upgrade bd9c5159c7ea -> 2b7c507d7d12
+
+ALTER TABLE queues ADD COLUMN log_restricted_caller_id ENUM('0','1','off','on','false','true','no','yes');
+
+UPDATE alembic_version SET version_num='2b7c507d7d12' WHERE alembic_version.version_num = 'bd9c5159c7ea';
+
+-- Running upgrade 2b7c507d7d12 -> 655054a68ad5
+
+ALTER TABLE ps_endpoints ADD COLUMN tenantid VARCHAR(80);
+
+UPDATE alembic_version SET version_num='655054a68ad5' WHERE alembic_version.version_num = '2b7c507d7d12';
 

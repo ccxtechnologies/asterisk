@@ -463,6 +463,15 @@ if test "${with_pjproject}" = "no" || test "${with_pjproject}" = "n" ; then
 	PJPROJECT_BUNDLED=no
 fi
 
+LIBJWT_BUNDLED=no
+AC_ARG_WITH([libjwt-bundled],
+	[AS_HELP_STRING([--with-libjwt-bundled],
+		[Use bundled libjwt library])],
+	[case "${withval}" in
+		y|ye|yes) LIBJWT_BUNDLED=yes ;;
+		*) LIBJWT_BUNDLED=no ;;
+	esac])
+
 #
 # OpenSSL stuff has to be done here because we want to pass
 # any resulting CFLAGS and LDFLAGS to the bundled pjproject
@@ -555,6 +564,7 @@ AST_EXT_LIB_SETUP([LDAP], [OpenLDAP], [ldap])
 AST_LIBCURL_CHECK_CONFIG([], [7.10.1])
 AST_EXT_LIB_SETUP([LIBEDIT], [NetBSD Editline library], [libedit])
 AST_EXT_LIB_SETUP_OPTIONAL([LIBEDIT_IS_UNICODE], [Libedit compiled for unicode], [LIBEDIT], [libedit])
+AST_EXT_LIB_SETUP([LIBJWT], [LIBJWT], [libjwt])
 AST_EXT_LIB_SETUP([LIBXML2], [LibXML2], [libxml2])
 AST_EXT_LIB_SETUP([LIBXSLT], [LibXSLT], [libxslt])
 AST_EXT_LIB_SETUP_OPTIONAL([LIBXSLT_CLEANUP], [LibXSLT Library Cleanup Function], [LIBXSLT], [libxslt])
@@ -743,6 +753,14 @@ if test "$JANSSON_BUNDLED" = "no" ; then
 	JANSSON_DEFINE_JSON_INT()
 else
 	PBX_JANSSON=1
+fi
+
+. ./third-party/versions.mak
+# Find required JWT support if bundled is not enabled.
+if test "$LIBJWT_BUNDLED" = "no" ; then
+	AST_PKG_CONFIG_CHECK([LIBJWT], [libjwt >= $LIBJWT_VERSION])
+else
+	PBX_LIBJWT=1
 fi
 
 # See if clock_gettime is in librt
@@ -1162,9 +1180,6 @@ AC_LINK_IFELSE(
 #AC_MSG_RESULT(no)
 #)
 #fi
-
-# for FreeBSD thr_self
-AC_CHECK_HEADERS([sys/thr.h])
 
 AC_MSG_CHECKING(for compiler sync operations)
 AC_LINK_IFELSE(
@@ -1725,7 +1740,7 @@ if test "${USE_ILBC}" != "no"; then
       ILBC_INTERNAL="no"
    fi
    if test "${ILBC_SYSTEM}" = "yes"; then
-      AST_PKG_CONFIG_CHECK(ILBC, libilbc)
+      AST_PKG_CONFIG_CHECK(ILBC, libilbc < 3)
       if test "$PBX_ILBC" = "1"; then
 	 ILBC_INTERNAL="no"
       fi

@@ -431,6 +431,10 @@ struct dahdi_pvt {
 	unsigned int mwimonitoractive:1;
 	/*! \brief TRUE if a MWI message sending thread is active */
 	unsigned int mwisendactive:1;
+	/*! \brief TRUE if a manual MWI override is active for a channel */
+	unsigned int mwioverride_active:1;
+	/*! \brief Manual MWI disposition (on/off) */
+	unsigned int mwioverride_disposition:1;
 	/*!
 	 * \brief TRUE if channel is out of reset and ready
 	 * \note Used by SS7.  Otherwise set but not used.
@@ -650,6 +654,14 @@ struct dahdi_pvt {
 	 * \note Set from the "waitfordialtone" value read in from chan_dahdi.conf
 	 */
 	int waitfordialtone;
+	/*!
+	 * \brief Transient variable. Same as waitfordialtone, but temporarily set for a specific call, rather than permanently for the channel.
+	 */
+	int waitfordialtonetemp;
+	/*!
+	 * \brief Transient variable. Stored off waitfordialtone duration at runtime.
+	 */
+	int waitfordialtoneduration;
 	/*!
 	 * \brief Number of frames to watch for dialtone in incoming calls
 	 * \note Set from the "dialtone_detect" value read in from chan_dahdi.conf

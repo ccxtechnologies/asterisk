@@ -88,9 +88,12 @@
 				</argument>
 				<xi:include xpointer="xpointer(/docs/info[@name='Dial_Resource'])" />
 			</parameter>
-			<parameter name="timeout" required="false">
+			<parameter name="timeout" required="false" argsep="^">
 				<para>Specifies the number of seconds we attempt to dial the specified devices.</para>
 				<para>If not specified, this defaults to 136 years.</para>
+				<para>If a second argument is specified, this controls the number of seconds we attempt to dial the specified devices
+				without receiving early media or ringing. If neither progress, ringing, nor voice frames have been received when this
+				timeout expires, the call will be treated as a CHANUNAVAIL. This can be used to skip destinations that may not be responsive.</para>
 			</parameter>
 			<parameter name="options" required="false">
 				<optionlist>
@@ -241,6 +244,10 @@
 				<option name="I">
 					<para>Asterisk will ignore any connected line update requests or any redirecting party
 					update requests it may receive on this dial attempt.</para>
+				</option>
+				<option name="j">
+					<para>Use the initial stream topology of the caller for outgoing channels, even if the caller topology has changed.</para>
+					<para>NOTE: For this option to work, it has to be present in all invocations of Dial that the caller channel goes through.</para>
 				</option>
 				<option name="k">
 					<para>Allow the called party to enable parking of the call by sending
@@ -750,6 +757,7 @@ enum {
 #define OPT_RING_WITH_EARLY_MEDIA (1LLU << 43)
 #define OPT_HANGUPCAUSE      (1LLU << 44)
 #define OPT_HEARPULSING      (1LLU << 45)
+#define OPT_TOPOLOGY_PRESERVE (1LLU << 46)
 
 enum {
 	OPT_ARG_ANNOUNCE = 0,
@@ -795,6 +803,7 @@ AST_APP_OPTIONS(dial_exec_options, BEGIN_OPTIONS
 	AST_APP_OPTION('H', OPT_CALLER_HANGUP),
 	AST_APP_OPTION('i', OPT_IGNORE_FORWARDING),
 	AST_APP_OPTION('I', OPT_IGNORE_CONNECTEDLINE),
+	AST_APP_OPTION('j', OPT_TOPOLOGY_PRESERVE),
 	AST_APP_OPTION('k', OPT_CALLEE_PARK),
 	AST_APP_OPTION('K', OPT_CALLER_PARK),
 	AST_APP_OPTION_ARG('L', OPT_DURATION_LIMIT, OPT_ARG_DURATION_LIMIT),
@@ -854,6 +863,16 @@ struct chanlist {
 };
 
 AST_LIST_HEAD_NOLOCK(dial_head, chanlist);
+
+static void topology_ds_destroy(void *data) {
+	struct ast_stream_topology *top = data;
+	ast_stream_topology_free(top);
+}
+
+static const struct ast_datastore_info topology_ds_info = {
+	.type = "app_dial_topology_preserve",
+	.destroy = topology_ds_destroy,
+};
 
 static int detect_disconnect(struct ast_channel *chan, char code, struct ast_str **featurecode);
 
@@ -1238,7 +1257,7 @@ static void set_duration_var(struct ast_channel *chan, const char *var_base, int
 }
 
 static struct ast_channel *wait_for_answer(struct ast_channel *in,
-	struct dial_head *out_chans, int *to, struct ast_flags64 *peerflags,
+	struct dial_head *out_chans, int *to_answer, int *to_progress, struct ast_flags64 *peerflags,
 	char *opt_args[],
 	struct privacy_args *pa,
 	const struct cause_args *num_in, int *result, char *dtmf_progress,
@@ -1251,7 +1270,9 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 {
 	struct cause_args num = *num_in;
 	int prestart = num.busy + num.congestion + num.nochan;
-	int orig = *to;
+	int orig_answer_to = *to_answer;
+	int progress_to_dup = *to_progress;
+	int orig_progress_to = *to_progress;
 	struct ast_channel *peer = NULL;
 	struct chanlist *outgoing = AST_LIST_FIRST(out_chans);
 	/* single is set if only one destination is enabled */
@@ -1279,7 +1300,7 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 				 * there is no point in continuing.  The bridge
 				 * will just fail if it gets that far.
 				 */
-				*to = -1;
+				*to_answer = -1;
 				strcpy(pa->status, "CONGESTION");
 				ast_channel_publish_dial(in, outgoing->chan, NULL, pa->status);
 				SCOPE_EXIT_RTN_VALUE(NULL, "%s: can't be made compat with %s\n",
@@ -1295,7 +1316,7 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 
 	is_cc_recall = ast_cc_is_recall(in, &cc_recall_core_id, NULL);
 
-	while ((*to = ast_remaining_ms(start, orig)) && !peer) {
+	while ((*to_answer = ast_remaining_ms(start, orig_answer_to)) && (*to_progress = ast_remaining_ms(start, progress_to_dup)) && !peer) {
 		struct chanlist *o;
 		int pos = 0; /* how many channels do we handle */
 		int numlines = prestart;
@@ -1321,13 +1342,13 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 			} else {
 				ast_verb(3, "No one is available to answer at this time (%d:%d/%d/%d)\n", numlines, num.busy, num.congestion, num.nochan);
 			}
-			*to = 0;
+			*to_answer = 0;
 			if (is_cc_recall) {
 				ast_cc_failed(cc_recall_core_id, "Everyone is busy/congested for the recall. How sad");
 			}
 			SCOPE_EXIT_RTN_VALUE(NULL, "%s: No outgoing channels available\n", ast_channel_name(in));
 		}
-		winner = ast_waitfor_n(watchers, pos, to);
+		winner = ast_waitfor_n(watchers, pos, to_answer);
 		AST_LIST_TRAVERSE(out_chans, o, node) {
 			int res = 0;
 			struct ast_frame *f;
@@ -1405,7 +1426,7 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 					ast_channel_unlock(in);
 				}
 
-				do_forward(o, &num, peerflags, single, caller_entertained, &orig,
+				do_forward(o, &num, peerflags, single, caller_entertained, &orig_answer_to,
 					forced_clid, stored_clid);
 
 				if (o->chan) {
@@ -1543,6 +1564,8 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 					 * fine for ringing frames to get sent through.
 					 */
 					++num_ringing;
+					*to_progress = -1;
+					progress_to_dup = -1;
 					if (ignore_cc || cc_frame_received || num_ringing == numlines) {
 						ast_verb(3, "%s is ringing\n", ast_channel_name(c));
 						/* Setup early media if appropriate */
@@ -1586,6 +1609,8 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 							ast_indicate(in, AST_CONTROL_PROGRESS);
 						}
 					}
+					*to_progress = -1;
+					progress_to_dup = -1;
 					if (!sent_progress) {
 						struct timeval now, then;
 						int64_t diff;
@@ -1776,6 +1801,8 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 				if (caller_entertained) {
 					break;
 				}
+				*to_progress = -1;
+				progress_to_dup = -1;
 				/* Fall through */
 			case AST_FRAME_TEXT:
 				if (single && ast_write(in, f)) {
@@ -1804,7 +1831,7 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 #endif
 			if (!f || ((f->frametype == AST_FRAME_CONTROL) && (f->subclass.integer == AST_CONTROL_HANGUP))) {
 				/* Got hung up */
-				*to = -1;
+				*to_answer = -1;
 				strcpy(pa->status, "CANCEL");
 				pa->canceled = 1;
 				publish_dial_end_event(in, out_chans, NULL, pa->status);
@@ -1828,7 +1855,7 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 					context = pbx_builtin_getvar_helper(in, "EXITCONTEXT");
 					if (onedigit_goto(in, context, (char) f->subclass.integer, 1)) {
 						ast_verb(3, "User hit %c to disconnect call.\n", f->subclass.integer);
-						*to = 0;
+						*to_answer = 0;
 						*result = f->subclass.integer;
 						strcpy(pa->status, "CANCEL");
 						pa->canceled = 1;
@@ -1847,7 +1874,7 @@ static struct ast_channel *wait_for_answer(struct ast_channel *in,
 				if (ast_test_flag64(peerflags, OPT_CALLER_HANGUP) &&
 					detect_disconnect(in, f->subclass.integer, &featurecode)) {
 					ast_verb(3, "User requested call disconnect.\n");
-					*to = 0;
+					*to_answer = 0;
 					strcpy(pa->status, "CANCEL");
 					pa->canceled = 1;
 					publish_dial_end_event(in, out_chans, NULL, pa->status);
@@ -1959,9 +1986,14 @@ skip_frame:;
 	}
 
 wait_over:
-	if (!*to || ast_check_hangup(in)) {
-		ast_verb(3, "Nobody picked up in %d ms\n", orig);
+	if (!*to_answer || ast_check_hangup(in)) {
+		ast_verb(3, "Nobody picked up in %d ms\n", orig_answer_to);
 		publish_dial_end_event(in, out_chans, NULL, "NOANSWER");
+	} else if (!*to_progress) {
+		ast_verb(3, "No early media received in %d ms\n", orig_progress_to);
+		publish_dial_end_event(in, out_chans, NULL, "CHANUNAVAIL");
+		strcpy(pa->status, "CHANUNAVAIL");
+		*to_answer = 0; /* Reset to prevent hangup */
 	}
 
 	if (is_cc_recall) {
@@ -2333,7 +2365,7 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 	struct chanlist *outgoing;
 	struct chanlist *tmp;
 	struct ast_channel *peer = NULL;
-	int to; /* timeout */
+	int to_answer, to_progress; /* timeouts */
 	struct cause_args num = { chan, 0, 0, 0 };
 	int cause, hanguptreecause = -1;
 
@@ -2389,6 +2421,7 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 	 */
 	struct ast_party_caller caller;
 	int max_forwards;
+	struct ast_datastore *topology_ds = NULL;
 	SCOPE_ENTER(1, "%s: Data: %s\n", ast_channel_name(chan), data);
 
 	/* Reset all DIAL variables back to blank, to prevent confusion (in case we don't reset all of them). */
@@ -2690,7 +2723,21 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 		 */
 		ast_party_connected_line_copy(&tmp->connected, ast_channel_connected(chan));
 
-		topology = ast_stream_topology_clone(ast_channel_get_stream_topology(chan));
+		if (ast_test_flag64(&opts, OPT_TOPOLOGY_PRESERVE)) {
+			topology_ds = ast_channel_datastore_find(chan, &topology_ds_info, NULL);
+
+			if (!topology_ds && (topology_ds = ast_datastore_alloc(&topology_ds_info, NULL))) {
+				topology_ds->data = ast_stream_topology_clone(ast_channel_get_stream_topology(chan));
+				ast_channel_datastore_add(chan, topology_ds);
+			}
+		}
+
+		if (topology_ds) {
+			ao2_ref(topology_ds->data, +1);
+			topology = topology_ds->data;
+		} else {
+			topology = ast_stream_topology_clone(ast_channel_get_stream_topology(chan));
+		}
 
 		ast_channel_unlock(chan);
 
@@ -2932,14 +2979,31 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 	AST_LIST_TRAVERSE_SAFE_END;
 
 	if (ast_strlen_zero(args.timeout)) {
-		to = -1;
+		to_answer = -1;
+		to_progress = -1;
 	} else {
-		to = atoi(args.timeout);
-		if (to > 0)
-			to *= 1000;
-		else {
-			ast_log(LOG_WARNING, "Invalid timeout specified: '%s'. Setting timeout to infinite\n", args.timeout);
-			to = -1;
+		char *anstimeout = strsep(&args.timeout, "^");
+		if (!ast_strlen_zero(anstimeout)) {
+			to_answer = atoi(anstimeout);
+			if (to_answer > 0) {
+				to_answer *= 1000;
+			} else {
+				ast_log(LOG_WARNING, "Invalid answer timeout specified: '%s'. Setting timeout to infinite\n", args.timeout);
+				to_answer = -1;
+			}
+		} else {
+			to_answer = -1;
+		}
+		if (!ast_strlen_zero(args.timeout)) {
+			to_progress = atoi(args.timeout);
+			if (to_progress > 0) {
+				to_progress *= 1000;
+			} else {
+				ast_log(LOG_WARNING, "Invalid progress timeout specified: '%s'. Setting timeout to infinite\n", args.timeout);
+				to_progress = -1;
+			}
+		} else {
+			to_progress = -1;
 		}
 	}
 
@@ -2979,7 +3043,7 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 		}
 	}
 
-	peer = wait_for_answer(chan, &out_chans, &to, peerflags, opt_args, &pa, &num, &result,
+	peer = wait_for_answer(chan, &out_chans, &to_answer, &to_progress, peerflags, opt_args, &pa, &num, &result,
 		dtmf_progress, mf_progress, mf_wink, sf_progress, sf_wink,
 		(ast_test_flag64(&opts, OPT_HEARPULSING) ? 1 : 0),
 		ignore_cc, &forced_clid, &stored_clid, &config);
@@ -2987,7 +3051,7 @@ static int dial_exec_full(struct ast_channel *chan, const char *data, struct ast
 	if (!peer) {
 		if (result) {
 			res = result;
-		} else if (to) { /* Musta gotten hung up */
+		} else if (to_answer) { /* Musta gotten hung up */
 			res = -1;
 		} else { /* Nobody answered, next please? */
 			res = 0;

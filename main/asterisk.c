@@ -70,8 +70,8 @@
 /*!
  * \page asterisk_community_resources Asterisk Community Resources
  * \par Websites
- * \li http://www.asterisk.org Asterisk Homepage
- * \li http://wiki.asterisk.org Asterisk Wiki
+ * \li https://www.asterisk.org Asterisk Homepage
+ * \li https://docs.asterisk.org Asterisk documentation
  *
  * \par Mailing Lists
  * \par
@@ -491,7 +491,8 @@ static char *handle_show_settings(struct ast_cli_entry *e, int cmd, struct ast_c
 	ast_cli(a->fd, "\nPBX Core settings\n");
 	ast_cli(a->fd, "-----------------\n");
 	ast_cli(a->fd, "  Version:                     %s\n", ast_get_version());
-	ast_cli(a->fd, "  Build Options:               %s\n", S_OR(ast_get_build_opts(), "(none)"));
+	ast_cli(a->fd, "  ABI related Build Options:   %s\n", S_OR(ast_get_build_opts(), "(none)"));
+	ast_cli(a->fd, "  All Build Options:           %s\n", S_OR(ast_get_build_opts_all(), "(none)"));
 	if (ast_option_maxcalls)
 		ast_cli(a->fd, "  Maximum calls:               %d (Current %d)\n", ast_option_maxcalls, ast_active_channels());
 	else
@@ -549,6 +550,7 @@ static char *handle_show_settings(struct ast_cli_entry *e, int cmd, struct ast_c
 	ast_cli(a->fd, "  Generic PLC:                 %s\n", ast_test_flag(&ast_options, AST_OPT_FLAG_GENERIC_PLC) ? "Enabled" : "Disabled");
 	ast_cli(a->fd, "  Generic PLC on equal codecs: %s\n", ast_test_flag(&ast_options, AST_OPT_FLAG_GENERIC_PLC_ON_EQUAL_CODECS) ? "Enabled" : "Disabled");
 	ast_cli(a->fd, "  Hide Msg Chan AMI events:    %s\n", ast_opt_hide_messaging_ami_events ? "Enabled" : "Disabled");
+	ast_cli(a->fd, "  Sounds search custom dir:    %s\n", ast_opt_sounds_search_custom ? "Enabled" : "Disabled");
 	ast_cli(a->fd, "  Min DTMF duration::          %u\n", option_dtmfminduration);
 #if !defined(LOW_MEMORY)
 	ast_cli(a->fd, "  Cache media frames:          %s\n", ast_opt_cache_media_frames ? "Enabled" : "Disabled");
@@ -2045,7 +2047,7 @@ static void really_quit(int num, shutdown_nice_t niceness, int restart)
 		run_cleanups = 0;
 	}
 
-	if (!restart) {
+	if (!restart && !ast_opt_remote) {
 		ast_sd_notify("STOPPING=1");
 	}
 	if (ast_opt_console || (ast_opt_remote && !ast_opt_exec)) {
@@ -2159,7 +2161,19 @@ static void set_header(char *outbuf, int maxout, char level)
 		break;
 	case 3: cmp = VERBOSE_PREFIX_3;
 		break;
-	default: cmp = VERBOSE_PREFIX_4;
+	case 4: cmp = VERBOSE_PREFIX_4;
+		break;
+	case 5: cmp = VERBOSE_PREFIX_5;
+		break;
+	case 6: cmp = VERBOSE_PREFIX_6;
+		break;
+	case 7: cmp = VERBOSE_PREFIX_7;
+		break;
+	case 8: cmp = VERBOSE_PREFIX_8;
+		break;
+	case 9: cmp = VERBOSE_PREFIX_9;
+		break;
+	default: cmp = VERBOSE_PREFIX_10;
 		break;
 	}
 
@@ -3165,29 +3179,49 @@ static int ast_el_read_history(const char *filename)
 		ast_el_initialize();
 	}
 
-	return history(el_hist, &ev, H_LOAD, filename);
+	if (access(filename, F_OK) == 0) {
+		return history(el_hist, &ev, H_LOAD, filename);
+	}
+
+	/* If the history file doesn't exist, failing to read it is unremarkable. */
+	return 0;
+}
+
+static void process_histfile(int (*readwrite)(const char *filename))
+{
+	struct passwd *pw = getpwuid(geteuid());
+	int ret = 0;
+	char *name = NULL;
+
+	if (!pw || ast_strlen_zero(pw->pw_dir)) {
+		ast_log(LOG_ERROR, "Unable to determine home directory.  History read/write disabled.\n");
+		return;
+	}
+
+	ret = ast_asprintf(&name, "%s/.asterisk_history", pw->pw_dir);
+	if (ret <= 0) {
+		ast_log(LOG_ERROR, "Unable to create history file name.  History read/write disabled.\n");
+		return;
+	}
+
+	ret = readwrite(name);
+	if (ret < 0) {
+		ast_log(LOG_ERROR, "Unable to read or write history file '%s'\n", name);
+	}
+
+	ast_free(name);
+
+	return;
 }
 
 static void ast_el_read_default_histfile(void)
 {
-	char histfile[80] = "";
-	const char *home = getenv("HOME");
-
-	if (!ast_strlen_zero(home)) {
-		snprintf(histfile, sizeof(histfile), "%s/.asterisk_history", home);
-		ast_el_read_history(histfile);
-	}
+	process_histfile(ast_el_read_history);
 }
 
 static void ast_el_write_default_histfile(void)
 {
-	char histfile[80] = "";
-	const char *home = getenv("HOME");
-
-	if (!ast_strlen_zero(home)) {
-		snprintf(histfile, sizeof(histfile), "%s/.asterisk_history", home);
-		ast_el_write_history(histfile);
-	}
+	process_histfile(ast_el_write_history);
 }
 
 static void ast_remotecontrol(char *data)

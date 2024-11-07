@@ -241,11 +241,18 @@
 				<para><replaceable>URL</replaceable> will be sent to the called party if the channel supports it.</para>
 			</parameter>
 			<parameter name="announceoverride" argsep="&amp;">
-				<argument name="filename" required="true">
-					<para>Announcement file(s) to play to agent before bridging call, overriding the announcement(s)
-					configured in <filename>queues.conf</filename>, if any.</para>
-				</argument>
-				<argument name="filename2" multiple="true" />
+				<para>Announcement file(s) to play to agent before bridging
+				call, overriding the announcement(s) configured in
+				<filename>queues.conf</filename>, if any.</para>
+				<para>Ampersand separated list of filenames. If the filename
+				is a relative filename (it does not begin with a slash), it
+				will be searched for in the Asterisk sounds directory. If the
+				filename is able to be parsed as a URL, Asterisk will
+				download the file and then begin playback on it. To include a
+				literal <literal>&amp;</literal> in the URL you can enclose
+				the URL in single quotes.</para>
+				<argument name="announceoverride" required="true" />
+				<argument name="announceoverride2" multiple="true" />
 			</parameter>
 			<parameter name="timeout">
 				<para>Will cause the queue to fail out after a specified number of
@@ -1862,6 +1869,7 @@ struct call_queue {
 	int announcepositionlimit;          /*!< How many positions we announce? */
 	int announcefrequency;              /*!< How often to announce their position */
 	int minannouncefrequency;           /*!< The minimum number of seconds between position announcements (def. 15) */
+	int periodicannouncestartdelay;     /*!< How long into the queue should the periodic accouncement start */
 	int periodicannouncefrequency;      /*!< How often to play periodic announcement */
 	int numperiodicannounce;            /*!< The number of periodic announcements configured */
 	int randomperiodicannounce;         /*!< Are periodic announcments randomly chosen */
@@ -1891,6 +1899,8 @@ struct call_queue {
 	int rrpos;                          /*!< Round Robin - position */
 	int memberdelay;                    /*!< Seconds to delay connecting member to caller */
 	int autofill;                       /*!< Ignore the head call status and ring an available agent */
+
+	int log_restricted_caller_id:1;     /*!< Whether log Restricted Caller ID */
 
 	struct ao2_container *members;      /*!< Head of the list of members */
 	struct queue_ent *head;             /*!< Head of the list of callers */
@@ -2995,6 +3005,7 @@ static void init_queue(struct call_queue *q)
 	q->weight = 0;
 	q->timeoutrestart = 0;
 	q->periodicannouncefrequency = 0;
+	q->periodicannouncestartdelay = -1;
 	q->randomperiodicannounce = 0;
 	q->numperiodicannounce = 0;
 	q->relativeperiodicannounce = 0;
@@ -3003,6 +3014,7 @@ static void init_queue(struct call_queue *q)
 	q->autopauseunavail = 0;
 	q->timeoutpriority = TIMEOUT_PRIORITY_APP;
 	q->autopausedelay = 0;
+	q->log_restricted_caller_id = 1;
 	if (!q->members) {
 		if (q->strategy == QUEUE_STRATEGY_LINEAR || q->strategy == QUEUE_STRATEGY_RRORDERED) {
 			/* linear strategy depends on order, so we have to place all members in a list */
@@ -3453,6 +3465,8 @@ static void queue_set_param(struct call_queue *q, const char *param, const char 
 			ast_str_set(&q->sound_periodicannounce[0], 0, "%s", val);
 			q->numperiodicannounce = 1;
 		}
+	} else if (!strcasecmp(param, "periodic-announce-startdelay")) {
+		q->periodicannouncestartdelay = atoi(val);
 	} else if (!strcasecmp(param, "periodic-announce-frequency")) {
 		q->periodicannouncefrequency = atoi(val);
 	} else if (!strcasecmp(param, "relative-periodic-announce")) {
@@ -3502,7 +3516,7 @@ static void queue_set_param(struct call_queue *q, const char *param, const char 
 		if (strategy < 0) {
 			ast_log(LOG_WARNING, "'%s' isn't a valid strategy for queue '%s', using ringall instead\n",
 				val, q->name);
-			q->strategy = QUEUE_STRATEGY_RINGALL;
+			strategy = QUEUE_STRATEGY_RINGALL;
 		}
 		if (strategy == q->strategy) {
 			return;
@@ -3532,6 +3546,8 @@ static void queue_set_param(struct call_queue *q, const char *param, const char 
 		} else {
 			q->timeoutpriority = TIMEOUT_PRIORITY_APP;
 		}
+	} else if (!strcasecmp(param, "log-restricted-caller-id")) {
+		q->log_restricted_caller_id = ast_true(val);
 	} else if (failunknown) {
 		if (linenum >= 0) {
 			ast_log(LOG_WARNING, "Unknown keyword in queue '%s': %s at line %d of queues.conf\n",
@@ -7240,7 +7256,7 @@ static int try_calling(struct queue_ent *qe, struct ast_flags opts, char **opt_a
 				if (!res2 && announce) {
 					char *front;
 					char *announcefiles = ast_strdupa(announce);
-					while ((front = strsep(&announcefiles, "&"))) {
+					while ((front = ast_strsep(&announcefiles, '&', AST_STRSEP_STRIP | AST_STRSEP_TRIM))) {
 						if (play_file(peer, front) < 0) {
 							ast_log(LOG_ERROR, "play_file failed for '%s' on %s\n", front, ast_channel_name(peer));
 						}
@@ -7883,6 +7899,9 @@ static void set_queue_member_pause(struct call_queue *q, struct member *mem, con
 	if (paused && !ast_strlen_zero(reason)) {
 		ast_copy_string(mem->reason_paused, reason, sizeof(mem->reason_paused));
 	} else {
+		/* We end up filling this in again later (temporarily) but we need it
+		 * empty for now so that the intervening code - specifically
+		 * dump_queue_members() - has the correct view of things. */
 		mem->reason_paused[0] = '\0';
 	}
 
@@ -7901,10 +7920,22 @@ static void set_queue_member_pause(struct call_queue *q, struct member *mem, con
 			"Queue:%s_avail", q->name);
 	}
 
-	ast_queue_log(q->name, "NONE", mem->membername, (paused ? "PAUSE" : "UNPAUSE"),
-		"%s", S_OR(reason, ""));
+	if (!paused && !ast_strlen_zero(reason)) {
+		/* Because we've been unpaused with a 'reason' we need to ensure that
+		 * that reason is emitted when the subsequent PauseQueueMember event
+		 * is raised. So temporarily set it on the member and clear it out
+		 * again right after. */
+		ast_copy_string(mem->reason_paused, reason, sizeof(mem->reason_paused));
+	}
+
+	ast_queue_log(q->name, "NONE", mem->membername, paused ? "PAUSE" : "UNPAUSE",
+		"%s", mem->reason_paused);
 
 	publish_queue_member_pause(q, mem);
+
+	if (!paused) {
+		mem->reason_paused[0] = '\0';
+	}
 }
 
 static int set_member_paused(const char *queuename, const char *interface, const char *reason, int paused)
@@ -8602,6 +8633,7 @@ static int queue_exec(struct ast_channel *chan, const char *data)
 	struct ast_flags opts = { 0, };
 	char *opt_args[OPT_ARG_ARRAY_SIZE];
 	int max_forwards;
+	int cid_allow;
 
 	if (ast_strlen_zero(data)) {
 		ast_log(LOG_WARNING, "Queue requires an argument: queuename[,options[,URL[,announceoverride[,timeout[,agi[,macro[,gosub[,rule[,position]]]]]]]]]\n");
@@ -8743,9 +8775,16 @@ static int queue_exec(struct ast_channel *chan, const char *data)
 	}
 	ast_assert(qe.parent != NULL);
 
+	if (qe.parent->periodicannouncestartdelay >= 0) {
+		qe.last_periodic_announce_time += qe.parent->periodicannouncestartdelay;
+		qe.last_periodic_announce_time -= qe.parent->periodicannouncefrequency;
+	}
+
+	cid_allow = qe.parent->log_restricted_caller_id || ((ast_party_id_presentation(&ast_channel_caller(chan)->id) & AST_PRES_RESTRICTION) == AST_PRES_ALLOWED);
+	
 	ast_queue_log(args.queuename, ast_channel_uniqueid(chan), "NONE", "ENTERQUEUE", "%s|%s|%d",
 		S_OR(args.url, ""),
-		S_COR(ast_channel_caller(chan)->id.number.valid, ast_channel_caller(chan)->id.number.str, ""),
+		S_COR(cid_allow && ast_channel_caller(chan)->id.number.valid, ast_channel_caller(chan)->id.number.str, ""),
 		qe.opos);
 
 	/* PREDIAL: Preprocess any callee gosub arguments. */
@@ -11048,7 +11087,7 @@ static char *handle_queue_add_member(struct ast_cli_entry *e, int cmd, struct as
 	case CLI_INIT:
 		e->command = "queue add member";
 		e->usage =
-			"Usage: queue add member <dial string> to <queue> [[[penalty <penalty>] as <membername>] state_interface <interface>]\n"
+			"Usage: queue add member <dial string> to <queue> [penalty <penalty> [as <membername> [state_interface <interface>]]]\n"
 			"       Add a dial string (Such as a channel,e.g. SIP/6001) to a queue with optionally:  a penalty, membername and a state_interface\n";
 		return NULL;
 	case CLI_GENERATE:

@@ -554,6 +554,7 @@ struct ast_event *ast_cel_create_event_with_time(struct ast_channel_snapshot *sn
 		AST_EVENT_IE_CEL_PEERACCT, AST_EVENT_IE_PLTYPE_STR, snapshot->peer->account,
 		AST_EVENT_IE_CEL_UNIQUEID, AST_EVENT_IE_PLTYPE_STR, snapshot->base->uniqueid,
 		AST_EVENT_IE_CEL_LINKEDID, AST_EVENT_IE_PLTYPE_STR, snapshot->peer->linkedid,
+		AST_EVENT_IE_CEL_TENANTID, AST_EVENT_IE_PLTYPE_STR, snapshot->base->tenantid,
 		AST_EVENT_IE_CEL_USERFIELD, AST_EVENT_IE_PLTYPE_STR, snapshot->base->userfield,
 		AST_EVENT_IE_CEL_EXTRA, AST_EVENT_IE_PLTYPE_STR, S_OR(extra_txt, ""),
 		AST_EVENT_IE_CEL_PEER, AST_EVENT_IE_PLTYPE_STR, S_OR(peer, ""),
@@ -853,6 +854,7 @@ int ast_cel_fill_record(const struct ast_event *e, struct ast_cel_event_record *
 	r->peer_account     = S_OR(ast_event_get_ie_str(e, AST_EVENT_IE_CEL_PEERACCT), "");
 	r->unique_id        = S_OR(ast_event_get_ie_str(e, AST_EVENT_IE_CEL_UNIQUEID), "");
 	r->linked_id        = S_OR(ast_event_get_ie_str(e, AST_EVENT_IE_CEL_LINKEDID), "");
+	r->tenant_id        = S_OR(ast_event_get_ie_str(e, AST_EVENT_IE_CEL_TENANTID), "");
 	r->amaflag          = ast_event_get_ie_uint(e, AST_EVENT_IE_CEL_AMAFLAGS);
 	r->user_field       = S_OR(ast_event_get_ie_str(e, AST_EVENT_IE_CEL_USERFIELD), "");
 	r->peer             = S_OR(ast_event_get_ie_str(e, AST_EVENT_IE_CEL_PEER), "");
@@ -1687,6 +1689,21 @@ static int reload_module(void)
 	ast_verb(3, "CEL logging %sabled.\n", is_enabled ? "en" : "dis");
 
 	return 0;
+}
+
+void ast_cel_publish_user_event(struct ast_channel *chan,
+	const char *event,
+	const char *extra)
+{
+	RAII_VAR(struct ast_json *, blob, NULL, ast_json_unref);
+
+	blob = ast_json_pack("{s: s, s: {s: s}}",
+		"event", event,
+		"extra", "extra", S_OR(extra, ""));
+	if (!blob) {
+		return;
+	}
+	ast_cel_publish_event(chan, AST_CEL_USER_DEFINED, blob);
 }
 
 void ast_cel_publish_event(struct ast_channel *chan,

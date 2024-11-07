@@ -676,6 +676,7 @@ static int add_header(void *obj)
 static int update_header(void *obj)
 {
 	struct header_data *data = obj;
+	pj_pool_t *pool = data->channel->session->inv_session->dlg->pool;
 	pjsip_hdr *hdr = NULL;
 	RAII_VAR(struct ast_datastore *, datastore,
 			 ast_sip_session_get_datastore(data->channel->session, data->header_datastore->type),
@@ -694,7 +695,7 @@ static int update_header(void *obj)
 		return -1;
 	}
 
-	pj_strcpy2(&((pjsip_generic_string_hdr *) hdr)->hvalue, data->header_value);
+	pj_strdup2(pool, &((pjsip_generic_string_hdr *) hdr)->hvalue, data->header_value);
 
 	return 0;
 }
@@ -1097,8 +1098,10 @@ static int read_param(void *obj)
 
 	ast_debug(2, "Successfully read %s parameter %s (length %zu)\n",
 		data->paramtype == PARAMETER_URI ? "URI" : "header", data->param_name, param_len);
-	ast_copy_string(data->buf, pj_strbuf(&param->value), data->len);
-	data->buf[pj_strlen(&param->value)] = '\0';
+	if (param_len) {
+		ast_copy_string(data->buf, pj_strbuf(&param->value), data->len);
+	}
+	data->buf[param_len] = '\0';
 
 	return 0;
 }

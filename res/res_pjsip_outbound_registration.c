@@ -608,14 +608,14 @@ static int contact_has_security_mechanisms(void *obj, void *arg, int flags)
 	struct ast_sip_contact_status *contact_status = ast_sip_get_contact_status(contact);
 
 	if (!contact_status) {
-		return -1;
+		return 0;
 	}
 	if (!AST_VECTOR_SIZE(&contact_status->security_mechanisms)) {
 		ao2_cleanup(contact_status);
-		return -1;
+		return 0;
 	}
 	*ret = contact_status;
-	return 0;
+	return CMP_MATCH | CMP_STOP;
 }
 
 static int contact_add_security_headers_to_status(void *obj, void *arg, int flags)
@@ -625,7 +625,7 @@ static int contact_add_security_headers_to_status(void *obj, void *arg, int flag
 	struct ast_sip_contact_status *contact_status = ast_sip_get_contact_status(contact);
 
 	if (!contact_status) {
-		return -1;
+		return 0;
 	}
 	if (AST_VECTOR_SIZE(&contact_status->security_mechanisms)) {
 		goto out;
@@ -644,8 +644,6 @@ out:
 static void add_security_headers(struct sip_outbound_registration_client_state *client_state,
 	pjsip_tx_data *tdata)
 {
-	int add_require_header = 1;
-	int add_proxy_require_header = 1;
 	int add_sec_client_header = 0;
 	struct sip_outbound_registration *reg = NULL;
 	struct ast_sip_endpoint *endpt = NULL;
@@ -654,8 +652,6 @@ static void add_security_headers(struct sip_outbound_registration_client_state *
 	struct ast_sip_security_mechanism_vector *sec_mechs = NULL;
 	static const pj_str_t security_verify = { "Security-Verify", 15 };
 	static const pj_str_t security_client = { "Security-Client", 15 };
-	static const pj_str_t proxy_require = { "Proxy-Require", 13 };
-	static const pj_str_t require = { "Require", 7 };
 
 	if (client_state->security_negotiation != AST_SIP_SECURITY_NEG_MEDIASEC) {
 		return;
@@ -668,7 +664,7 @@ static void add_security_headers(struct sip_outbound_registration_client_state *
 		/* Retrieve all contacts associated with aors from this endpoint
 		 * and find the first one that has security mechanisms.
 		 */
-		ao2_callback(contact_container, 0, contact_has_security_mechanisms, &contact_status);
+		ao2_callback(contact_container, OBJ_NODATA, contact_has_security_mechanisms, &contact_status);
 		if (contact_status) {
 			ao2_lock(contact_status);
 			sec_mechs = &contact_status->security_mechanisms;
@@ -689,20 +685,10 @@ static void add_security_headers(struct sip_outbound_registration_client_state *
 			/* necessary if a retry occures */
 			add_sec_client_header = (pjsip_msg_find_hdr_by_name(tdata->msg, &security_client, NULL) == NULL) ? 1 : 0;
 		}
-		add_require_header =
-			(pjsip_msg_find_hdr_by_name(tdata->msg, &require, NULL) == NULL) ? 1 : 0;
-		add_proxy_require_header =
-			(pjsip_msg_find_hdr_by_name(tdata->msg, &proxy_require, NULL) == NULL) ? 1 : 0;
 	} else {
 		ast_sip_add_security_headers(&client_state->security_mechanisms, "Security-Client", 0, tdata);
 	}
 
-	if (add_require_header) {
-		ast_sip_add_header(tdata, "Require", "mediasec");
-	}
-	if (add_proxy_require_header) {
-		ast_sip_add_header(tdata, "Proxy-Require", "mediasec");
-	}
 	if (add_sec_client_header) {
 		ast_sip_add_security_headers(&client_state->security_mechanisms, "Security-Client", 0, tdata);
 	}
