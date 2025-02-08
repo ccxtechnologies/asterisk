@@ -259,7 +259,7 @@ Asterisk is a trademark of Sangoma Technologies Corporation
 [home page]: https://www.asterisk.org
 [support]: https://www.asterisk.org/support
 [documentation]: https://docs.asterisk.org/
-[mailing list]: http://lists.digium.com/mailman/listinfo/asterisk-users
+[mailing list]: https://lists.digium.com/mailman/listinfo/asterisk-users.html
 [chan_dahdi.conf]: configs/samples/chan_dahdi.conf.sample
 [voip-info.org]: http://www.voip-info.org/wiki-Asterisk
 [asteriskdocs.org]: http://www.asteriskdocs.org
