@@ -2970,12 +2970,6 @@ fi
 
 AC_SUBST([PBX_SYSLOG])
 
-if test -f makeopts; then
-	${ac_cv_path_EGREP} 'CURSES|GTK2|OSARCH|NEWT' makeopts > makeopts.acbak
-else
-	touch makeopts.acbak
-fi
-
 # conf_bridge (binaural rendering): check if HRIRs are available
 # this check does not work when cross-compiling
 if test "${cross_compiling}" = "no"; then
@@ -2996,16 +2990,6 @@ if test -f build_tools/menuselect-deps; then
 fi
 
 AC_OUTPUT
-
-${ac_cv_path_EGREP} 'CURSES|GTK2|OSARCH|NEWT' makeopts > makeopts.acbak2
-if test "${ac_cv_path_CMP}" = ":"; then
-	( cd "`pwd`/menuselect" && ./configure )
-elif ${ac_cv_path_CMP} -s makeopts.acbak makeopts.acbak2; then : ; else
-	( cd "`pwd`/menuselect" && ./configure )
-fi
-
-rm makeopts.acbak makeopts.acbak2
-
 
 if test "x${silent}" != "xyes" ; then
 echo
