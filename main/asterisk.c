@@ -569,6 +569,8 @@ static char *handle_show_settings(struct ast_cli_entry *e, int cmd, struct ast_c
 		ast_cli(a->fd, "  RTP dynamic payload types:   %u-%u\n",
 		        AST_RTP_PT_FIRST_DYNAMIC, AST_RTP_MAX_PT - 1);
 	}
+	ast_cli(a->fd, "  Shell on remote consoles:    %s\n",
+		ast_option_disable_remote_console_shell ? "Disabled" : "Enabled");
 
 	ast_cli(a->fd, "\n* Subsystems\n");
 	ast_cli(a->fd, "  -------------\n");
@@ -1114,6 +1116,10 @@ void ast_unreplace_sigchld(void)
 	unsigned int level;
 
 	ast_mutex_lock(&safe_system_lock);
+
+	/* Wrapping around here is an error */
+	ast_assert(safe_system_level > 0);
+
 	level = --safe_system_level;
 
 	/* only restore the handler if we are the last one */
@@ -2320,6 +2326,10 @@ static int remoteconsolehandler(const char *s)
 
 	/* The real handler for bang */
 	if (s[0] == '!') {
+		if (ast_option_disable_remote_console_shell) {
+			printf("Shell access is disabled on remote consoles\n");
+			return 1;
+		}
 		if (s[1])
 			ast_safe_system(s+1);
 		else
@@ -4329,7 +4339,7 @@ static void asterisk_daemon(int isroot, const char *runuser, const char *rungrou
 	if (ast_opt_console) {
 		/* Console stuff now... */
 		/* Register our quit function */
-		char title[256];
+		char title[296];
 		char hostname[MAXHOSTNAMELEN] = "";
 
 		if (gethostname(hostname, sizeof(hostname) - 1)) {
