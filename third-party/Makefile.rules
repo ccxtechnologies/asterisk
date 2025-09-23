@@ -40,6 +40,7 @@ export DIRNAME ?= dirname
 export DOWNLOAD
 export DOWNLOAD_TO_STDOUT
 export DOWNLOAD_TIMEOUT
+export MKDIR ?= mkdir
 
 DOWNLOAD_DIR := $(or $(EXTERNALS_CACHE_DIR),$(TMPDIR),$(wildcard /tmp),.)
 
@@ -56,6 +57,7 @@ endef
 
 define TARBALL_DOWNLOAD
 	($(SHELL_ECHO_PREFIX) Downloading $(TARBALL_URL) to $(DOWNLOAD_DIR)/$(TARBALL_FILE) ;\
+	$(MKDIR) -p $(DOWNLOAD_DIR) &&\
 	$(DOWNLOAD_TO_STDOUT) $(call DOWNLOAD_TIMEOUT,5,60) $(TARBALL_URL) > $(DOWNLOAD_DIR)/$(TARBALL_FILE) &&\
 	$(TARBALL_VERIFY))
 endef
