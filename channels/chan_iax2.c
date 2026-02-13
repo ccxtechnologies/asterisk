@@ -12984,6 +12984,7 @@ static struct iax2_peer *build_peer(const char *name, struct ast_variable *v, st
 		}
 		unlink_peer(peer);
 	} else if ((peer = ao2_alloc(sizeof(*peer), peer_destructor))) {
+		peer->lastms = -1;
 		peer->expire = -1;
 		peer->pokeexpire = -1;
 		peer->sockfd = defaultsockfd;
