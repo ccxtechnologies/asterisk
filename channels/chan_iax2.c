@@ -11272,7 +11272,7 @@ static int socket_process_helper(struct iax2_thread *thread)
 				if (iaxs[fr->callno]->peerpoke) {
 					RAII_VAR(struct ast_json *, blob, NULL, ast_json_unref);
 					peer = iaxs[fr->callno]->peerpoke;
-					if ((peer->lastms < 0)  || (peer->historicms > peer->maxms)) {
+					if ((peer->lastms <= 0)  || (peer->historicms > peer->maxms)) {
 						if (iaxs[fr->callno]->pingtime <= peer->maxms) {
 							ast_log(LOG_NOTICE, "Peer '%s' is now REACHABLE! Time: %u\n", peer->name, iaxs[fr->callno]->pingtime);
 							ast_endpoint_set_state(peer->endpoint, AST_ENDPOINT_ONLINE);
@@ -12984,7 +12984,6 @@ static struct iax2_peer *build_peer(const char *name, struct ast_variable *v, st
 		}
 		unlink_peer(peer);
 	} else if ((peer = ao2_alloc(sizeof(*peer), peer_destructor))) {
-		peer->lastms = -1;
 		peer->expire = -1;
 		peer->pokeexpire = -1;
 		peer->sockfd = defaultsockfd;
